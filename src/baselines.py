@@ -15,7 +15,8 @@ import pandas as pd
 import statsmodels.api as sm
 from scipy import stats
 from statsforecast import StatsForecast
-from statsforecast.models import AutoARIMA, AutoETS, MSTL, SeasonalNaive, Theta
+from statsforecast.models import AutoETS, MSTL, SeasonalNaive, Theta
+from statsmodels.tsa.seasonal import STL
 
 LEVELS = [20, 40, 60, 80]
 
@@ -35,7 +36,7 @@ DECILES = (0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9)
 # the standard classical fix for exactly that shape (see the "Growth & decay
 # traps" gallery category, which is built to expose this difference).
 REGRESSION_MODEL_CHOICES = ["LinearTrend", "LinearRegression", "ExponentialTrend"]
-MODEL_CHOICES = ["SeasonalNaive", "AutoARIMA", "AutoETS", "Theta", "MSTL", *REGRESSION_MODEL_CHOICES]
+MODEL_CHOICES = ["SeasonalNaive", "AutoETS", "Theta", "MSTL", *REGRESSION_MODEL_CHOICES]
 
 # What each baseline actually does and doesn't account for -- e.g. SeasonalNaive
 # has no idea trend exists, which is exactly the kind of detail that isn't
@@ -43,36 +44,41 @@ MODEL_CHOICES = ["SeasonalNaive", "AutoARIMA", "AutoETS", "Theta", "MSTL", *REGR
 # checkbox in the UI.
 MODEL_INFO: dict[str, str] = {
     "SeasonalNaive": (
-        "Repeats the value from exactly one season ago (e.g. same weekday last week) with no change. "
-        "Does NOT account for trend, and has no smoothing or noise-averaging at all -- if last season's "
-        "value was an outlier, that outlier is the forecast. A simple, often surprisingly tough-to-beat "
-        "benchmark precisely because it makes no assumptions that can be wrong."
-    ),
-    "AutoARIMA": (
-        "Automatically searches (S)ARIMA orders (differencing + autoregressive + moving-average terms, "
-        "seasonal and non-seasonal) via AIC and fits the best one. Differencing lets it capture a trend "
-        "implicitly and adapt if the trend changes; autoregressive terms capture short-term "
-        "autocorrelation. Relatively slow to fit because of the order search."
+        "Repeats the value from exactly one season ago with no change. Does NOT account for trend, and "
+        "has no smoothing or noise-averaging at all -- if last season's value was an outlier, that "
+        "outlier is the forecast. A simple, often surprisingly tough-to-beat benchmark precisely because "
+        "it makes no assumptions that can be wrong. The season length itself is detected per series (see "
+        "detect_season_length) rather than assumed from frequency alone -- see the lag shown next to its "
+        "name above."
     ),
     "AutoETS": (
         "Automatically searches Error-Trend-Season exponential smoothing specifications (additive/"
         "multiplicative/none for each component, trend damped or not) via AIC and fits the best one. "
         "Explicitly models level, trend, and seasonality as smoothly-updating states -- but needs enough "
         "full seasonal cycles of history to justify fitting a seasonal term at all; with too little "
-        "history it will correctly fall back to a non-seasonal fit rather than guess."
+        "history it will correctly fall back to a non-seasonal fit rather than guess. Uses the same "
+        "detected season length as SeasonalNaive/Theta (see detect_season_length); benchmarked directly, "
+        "fitting at a long (e.g. 365-day) detected period is ~40x slower than a short one (18.5s vs "
+        "0.45s per series) -- noticeably slower on strongly seasonal daily data, but still tractable, "
+        "unlike AutoARIMA at the same period (dropped from this app for exactly that reason -- its order "
+        "search didn't finish a single fit in over 6 minutes at a 365-day period)."
     ),
     "Theta": (
         "Decomposes the series into a long-term trend line and a short-term component, forecasts each "
         "separately (the trend linearly, the short-term component via simple exponential smoothing), "
         "then recombines them. A deceptively simple method that won the M3 forecasting competition; "
-        "captures trend but has a fairly rigid, linear view of it."
+        "captures trend but has a fairly rigid, linear view of it. Uses the same detected season length "
+        "as SeasonalNaive/AutoETS (see detect_season_length) -- fitting cost doesn't depend on the "
+        "period, so there's no tradeoff to make here."
     ),
     "MSTL": (
         "Decomposes the series into trend + multiple seasonal components (e.g. weekly AND yearly at "
         "once, unlike the other models here which only ever fit one seasonal period) via repeated STL "
         "smoothing, forecasts the trend+remainder, and adds the seasonal components back. Needs at least "
         "~2 full cycles of each seasonal period to be fit at all -- periods without enough history are "
-        "silently dropped rather than guessed at."
+        "silently dropped rather than guessed at. The only baseline here that isn't forced to pick just "
+        "one period at daily frequency, so it tends to have an edge on the 'Overlapping cycles' category "
+        "specifically."
     ),
     "LinearTrend": (
         "OLS regression of the series on a straight time trend only -- no seasonality, no "
@@ -83,7 +89,9 @@ MODEL_INFO: dict[str, str] = {
     "LinearRegression": (
         "OLS regression of the series on a straight time trend plus two Fourier seasonal harmonics -- "
         "captures a single repeating cycle shape on top of a trend. Like LinearTrend, the trend itself "
-        "is extrapolated as a straight line, so it will be systematically wrong for curved growth/decay."
+        "is extrapolated as a straight line, so it will be systematically wrong for curved growth/decay. "
+        "Uses the same detected season length as SeasonalNaive/AutoETS/Theta (see detect_season_length) "
+        "for its Fourier period."
     ),
     "ExponentialTrend": (
         "OLS regression of log(series) on a straight time trend, forecast by exponentiating back. A "
@@ -95,15 +103,20 @@ MODEL_INFO: dict[str, str] = {
     ),
 }
 
-# Default seasonal period (in native units of the series' own frequency) per freq.
-# YS (annual) has no sub-period cycle -- a year IS the base unit -- so season_length=1
-# (non-seasonal fitting), same convention these libraries use for yearly data.
+# Seasonal period (in native units of the series' own frequency) used ONLY for the
+# MASE/RMSSE scaling denominator (naive_seasonal_scale in metrics.py) -- a fixed,
+# per-frequency convention, independent of whichever period a given model actually
+# fits with. YS (annual) has no sub-period cycle -- a year IS the base unit -- so
+# season_length=1 (non-seasonal scaling), same convention these libraries use for
+# yearly data.
 DEFAULT_SEASON_LENGTH = {"D": 7, "W": 52, "MS": 12, "YS": 1}
 
 
 def _season_lengths(n: int, freq: str) -> list[int]:
-    """Candidate MSTL seasonal periods for this frequency, filtered to ones
-    the series actually has enough data to estimate (>= ~2 full cycles)."""
+    """Candidate seasonal periods for this frequency, filtered to ones the
+    series actually has enough data to estimate (>= ~2 full cycles). Used both
+    as MSTL's multi-period list and as the candidate set detect_season_length
+    picks a single winner from."""
     if freq == "D":
         lengths = [7]
         if n >= 90:
@@ -124,20 +137,74 @@ def _season_lengths(n: int, freq: str) -> list[int]:
             lengths.append(12)
         return lengths
     if freq == "YS":
-        return []  # no sub-annual cycle -- MSTL isn't meaningful here
+        return []  # no sub-annual cycle -- seasonality isn't meaningful here
     return [DEFAULT_SEASON_LENGTH.get(freq, 7)]
 
 
-def _build_model(name: str, n: int, freq: str):
-    sl = DEFAULT_SEASON_LENGTH.get(freq, 7)
+# Below this, a candidate period is treated as "not really seasonal" rather than
+# just the least-bad option. There's no single universally agreed cutoff for this
+# statistic (Wang/Smith/Hyndman's seasonal-strength feature is usually used as a
+# continuous score, not thresholded), but a series that clears ~0.3 has a clearly
+# visible, repeatable cycle at that period, while noise typically scores well under
+# 0.1 -- picked to separate "real cycle" from "STL found a pattern in the noise."
+SEASONAL_STRENGTH_THRESHOLD = 0.3
+
+
+def _seasonal_strength(y: np.ndarray, period: int) -> float:
+    """Hyndman & Athanasopoulos's seasonal-strength measure: how much of the
+    variance left after removing trend is explained by the seasonal component,
+    via an STL decomposition at this candidate period -- 0 means no seasonality,
+    approaching 1 means strongly seasonal. This is the standard, well-established
+    way to test whether a candidate period is real, rather than assuming it from
+    frequency alone (see detect_season_length)."""
+    if period < 2 or len(y) < 2 * period:
+        return 0.0
+    try:
+        result = STL(y, period=period, robust=True).fit()
+    except Exception:
+        return 0.0
+    seasonal_and_resid_var = np.var(result.seasonal + result.resid)
+    if seasonal_and_resid_var < 1e-12:
+        return 0.0
+    return float(max(0.0, 1.0 - np.var(result.resid) / seasonal_and_resid_var))
+
+
+def detect_season_length(y: np.ndarray, freq: str) -> int:
+    """Picks ONE season_length for this series, shared by every single-season
+    model (SeasonalNaive, AutoETS, Theta, LinearRegression's Fourier term) --
+    via seasonal-strength testing across this frequency's candidate periods
+    (_season_lengths), rather than a fixed per-model guess or a per-model cost
+    tradeoff. Falls back to 1 (non-seasonal) if no candidate clears
+    SEASONAL_STRENGTH_THRESHOLD, instead of defaulting to the shortest
+    candidate just because it's conventional. MSTL is the one baseline that
+    doesn't use this -- it fits every candidate period at once instead of
+    picking a single winner.
+
+    Mostly-zero series (intermittent demand) skip detection entirely and go
+    straight to 1: verified directly that STL reports spuriously HIGH seasonal
+    strength (~0.96 at a 365-day period) on this app's Intermittent demand
+    category, which has no designed periodicity at all -- with so few nonzero
+    points, STL's seasonal component ends up fitting the sparse spike pattern
+    itself rather than a real repeating cycle, especially with only ~3 annual
+    cycles of history to check it against.
+    """
+    if np.mean(y == 0) > 0.5:
+        return 1
+    candidates = _season_lengths(len(y), freq)
+    if not candidates:
+        return 1
+    scored = [(p, _seasonal_strength(y, p)) for p in candidates]
+    best_period, best_strength = max(scored, key=lambda ps: ps[1])
+    return best_period if best_strength >= SEASONAL_STRENGTH_THRESHOLD else 1
+
+
+def _build_model(name: str, n: int, freq: str, season_length: int):
     if name == "SeasonalNaive":
-        return SeasonalNaive(season_length=sl)
-    if name == "AutoARIMA":
-        return AutoARIMA(season_length=sl)
+        return SeasonalNaive(season_length=season_length)
     if name == "AutoETS":
-        return AutoETS(season_length=sl)
+        return AutoETS(season_length=season_length)
     if name == "Theta":
-        return Theta(season_length=sl)
+        return Theta(season_length=season_length)
     if name == "MSTL":
         lengths = _season_lengths(n, freq)
         if not lengths:
@@ -221,7 +288,17 @@ def run_baselines(
     results: dict[str, dict] = {}
 
     sf_df = pd.DataFrame({"unique_id": "series", "ds": df["ds"].values, "y": df["y"].values})
-    season_length = DEFAULT_SEASON_LENGTH.get(freq, 7)
+    # One season_length per series, detected once (see detect_season_length) and
+    # shared by every single-season model below -- SeasonalNaive, AutoETS, Theta,
+    # and LinearRegression's Fourier term -- instead of each picking independently.
+    season_length = detect_season_length(df["y"].to_numpy(), freq)
+
+    def _tag_season_length(name: str) -> int | list[int] | None:
+        if name == "MSTL":
+            return _season_lengths(n, freq) or None
+        if name in ("SeasonalNaive", "AutoETS", "Theta", "LinearRegression"):
+            return season_length
+        return None  # LinearTrend, ExponentialTrend -- no seasonal term
 
     for name in model_names:
         if name in REGRESSION_MODEL_CHOICES:
@@ -234,9 +311,10 @@ def run_baselines(
                     )
             except Exception as exc:  # noqa: BLE001 - surfaced in UI, not swallowed silently
                 results[name] = {"point": None, "quantiles": None, "error": str(exc)}
+            results[name]["season_length"] = _tag_season_length(name)
             continue
         try:
-            model = _build_model(name, n, freq)
+            model = _build_model(name, n, freq, season_length)
             sf = StatsForecast(models=[model], freq=freq, n_jobs=1)
             fc = sf.forecast(df=sf_df, h=horizon, level=LEVELS)
             point = fc[name].to_numpy()
@@ -247,5 +325,6 @@ def run_baselines(
             results[name] = {"point": point, "quantiles": quantiles, "error": None}
         except Exception as exc:  # noqa: BLE001 - surfaced in UI, not swallowed silently
             results[name] = {"point": None, "quantiles": None, "error": str(exc)}
+        results[name]["season_length"] = _tag_season_length(name)
 
     return results

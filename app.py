@@ -344,24 +344,57 @@ _VISIBILITY_LABELS = {
 }
 
 
+_FIXED_SWATCH_COLORS = {
+    "History": plotting.COLOR_CONTEXT,
+    "TimesFM (point)": plotting.COLOR_TIMESFM,
+    "TimesFM quantile bands": plotting.COLOR_TIMESFM,
+    "Actual (holdout)": plotting.COLOR_ACTUAL,
+}
+
+
 def _visibility_color(name: str) -> str:
     """The EXACT color that series is actually drawn with on the chart --
     reusing the same lookup _add_fan_traces itself uses (right down to its
     INK_SECONDARY fallback for unrecognized baseline names, e.g. 'TimesFM (no
     covariates)' isn't in BASELINE_COLORS and really is drawn gray, not a
     color made up to look distinct)."""
-    fixed = {
-        "History": plotting.COLOR_CONTEXT,
-        "TimesFM (point)": plotting.COLOR_TIMESFM,
-        "TimesFM quantile bands": plotting.COLOR_TIMESFM,
-        "Actual (holdout)": plotting.COLOR_ACTUAL,
-    }
-    if name in fixed:
-        return fixed[name]
+    if name in _FIXED_SWATCH_COLORS:
+        return _FIXED_SWATCH_COLORS[name]
     return plotting.BASELINE_COLORS.get(name, plotting.INK_SECONDARY)
 
 
-def series_visibility_selector(key_prefix: str, baseline_names: list[str]) -> set[str]:
+def _visibility_swatch_css(name: str) -> str:
+    """Background for the swatch -- a solid bar for series drawn as solid lines
+    (History, TimesFM, Actual), or a dotted pattern for baseline models, which
+    _add_fan_traces always draws with dash='dot'. Keeps the selector honest
+    about line style, not just color."""
+    color = _visibility_color(name)
+    if name in _FIXED_SWATCH_COLORS:
+        return f"background:{color};"
+    return f"background-image: repeating-linear-gradient(90deg, {color} 0 4px, transparent 4px 8px);"
+
+
+def _format_season_length(sl) -> str:
+    if isinstance(sl, list):
+        return ",".join(str(x) for x in sl)
+    return str(sl)
+
+
+def _baseline_display_label(name: str, season_lengths: dict[str, object] | None) -> str:
+    """Appends the actual lag/period a model fit with, e.g. 'SeasonalNaive
+    (lag 365)' -- otherwise this is invisible in the UI, which is exactly what
+    let an earlier hardcoded-lag mismatch (see detect_season_length in
+    baselines.py) go unnoticed: the detected lag needs to be visible at a
+    glance, not just documented in a tooltip."""
+    sl = (season_lengths or {}).get(name)
+    if sl is None:
+        return name
+    return f"{name} (lag {_format_season_length(sl)})"
+
+
+def series_visibility_selector(
+    key_prefix: str, baseline_names: list[str], season_lengths: dict[str, object] | None = None
+) -> set[str]:
     """A row of checkboxes, one per series, each with a small color swatch in
     the series' EXACT chart color directly above it -- the same component
     doing double duty as legend and control, rather than a separate list with
@@ -373,11 +406,11 @@ def series_visibility_selector(key_prefix: str, baseline_names: list[str]) -> se
     cols = st.columns(len(options))
     selected = set()
     for col, name in zip(cols, options):
-        color = _visibility_color(name)
-        label = _VISIBILITY_LABELS.get(name, name)
+        swatch_css = _visibility_swatch_css(name)
+        label = _VISIBILITY_LABELS.get(name) or _baseline_display_label(name, season_lengths)
         with col:
             st.markdown(
-                f'<div style="height:5px;border-radius:2px;margin-bottom:3px;background:{color};"></div>',
+                f'<div style="height:5px;border-radius:2px;margin-bottom:3px;{swatch_css}"></div>',
                 unsafe_allow_html=True,
             )
             if st.checkbox(label, value=True, key=f"{key_prefix}_vis_{name}"):
@@ -386,7 +419,7 @@ def series_visibility_selector(key_prefix: str, baseline_names: list[str]) -> se
 
 
 _MODEL_NOTES = {
-    "AutoARIMA": "relatively slow to fit",
+    "AutoETS": "can be slow when the detected season length is long",
 }
 
 
@@ -424,7 +457,13 @@ def _add_zoom_rect(overview_fig, detail_fig, row: int | None = None, col: int | 
 _COMPACT_TOP_MARGIN = dict(t=50)
 
 
-def render_fan_chart_pair(title: str, key_prefix: str, baseline_names: list[str] | None = None, **kwargs) -> None:
+def render_fan_chart_pair(
+    title: str,
+    key_prefix: str,
+    baseline_names: list[str] | None = None,
+    season_lengths: dict[str, object] | None = None,
+    **kwargs,
+) -> None:
     """Overview chart (full history, zero-anchored) next to a detail chart
     (tight x/y range around just the forecast window), with a light outline on
     the overview marking exactly what region the detail chart is zoomed into.
@@ -434,7 +473,7 @@ def render_fan_chart_pair(title: str, key_prefix: str, baseline_names: list[str]
     be redundant. Both figures get the same reduced top margin (freed up now
     that neither needs room for a legend), which is also what keeps their plot
     areas the same pixel height side by side."""
-    visible = series_visibility_selector(key_prefix, baseline_names or [])
+    visible = series_visibility_selector(key_prefix, baseline_names or [], season_lengths)
 
     detail_fig = plotting.fan_chart(title="Detail", zoom=True, visible=visible, **kwargs)
     detail_fig.update_layout(showlegend=False, margin=_COMPACT_TOP_MARGIN)
@@ -443,7 +482,7 @@ def render_fan_chart_pair(title: str, key_prefix: str, baseline_names: list[str]
     overview_fig.update_layout(showlegend=False, margin=_COMPACT_TOP_MARGIN)
     _add_zoom_rect(overview_fig, detail_fig)
 
-    col1, col2 = st.columns([0.6, 0.4])
+    col1, col2 = st.columns([0.5, 0.5])
     with col1:
         st.plotly_chart(overview_fig, use_container_width=True)
     with col2:
@@ -462,9 +501,9 @@ def tab_fit_forecast(model):
         "cases). Covariate series and the deliberately hard-to-forecast categories have their own "
         "dedicated tabs -- this one focuses on the everyday case."
     )
-    left, right = st.columns([1, 3])
+    left, right = st.columns([1, 3], gap="large")
 
-    with left:
+    with left, st.container(border=True):
         spec = series_picker("t1", categories=["Standard"], default_category="Standard", show_category_selector=False)
         n = len(spec.df)
         holdout_len, context_len = holdout_context_controls("t1", n, spec.freq)
@@ -478,6 +517,7 @@ def tab_fit_forecast(model):
         render_fan_chart_pair(
             title=f"{spec.name} -- {holdout_len} {synthetic.FREQ_UNIT[spec.freq]} holdout",
             key_prefix="t1", baseline_names=list(base_res.keys()),
+            season_lengths={name: res.get("season_length") for name, res in base_res.items()},
             context_dates=train_df["ds"], context_y=train_df["y"].to_numpy(), forecast_dates=holdout_df["ds"],
             tfm_result=tfm_res, holdout_y=holdout_df["y"].to_numpy(), baseline_results=base_res,
         )
@@ -503,9 +543,9 @@ def tab_covariates(model):
         "Elasticity is estimated by perturbing the horizon-period price and re-forecasting (finite-difference), "
         "then checked against the synthetic data's known ground-truth elasticity."
     )
-    left, right = st.columns([1, 3])
+    left, right = st.columns([1, 3], gap="large")
 
-    with left:
+    with left, st.container(border=True):
         spec = series_picker(
             "t2", categories=["Covariates / elasticity"], default_category="Covariates / elasticity",
             show_category_selector=False,
@@ -549,7 +589,7 @@ def tab_covariates(model):
         cov_overview_fig.update_layout(showlegend=False, margin=_COMPACT_TOP_MARGIN)
         _add_zoom_rect(cov_overview_fig, cov_detail_fig, row=1, col=1)
 
-        col1, col2 = st.columns([0.6, 0.4])
+        col1, col2 = st.columns([0.5, 0.5])
         with col1:
             st.plotly_chart(cov_overview_fig, use_container_width=True)
         with col2:
@@ -677,9 +717,9 @@ def tab_gallery(model):
         "that saturates, and rapid decay toward the non-negativity floor. The chart always shows full "
         "history so these events are never cropped out of view."
     )
-    left, right = st.columns([1, 3])
+    left, right = st.columns([1, 3], gap="large")
 
-    with left:
+    with left, st.container(border=True):
         spec = series_picker("t3", categories=HARD_CATEGORIES)
         n = len(spec.df)
         holdout_len, context_len = holdout_context_controls("t3", n, spec.freq, default_holdout_frac=0.25)
@@ -694,6 +734,7 @@ def tab_gallery(model):
         render_fan_chart_pair(
             title=f"{spec.name} -- {holdout_len} {synthetic.FREQ_UNIT[spec.freq]} holdout",
             key_prefix="t3", baseline_names=list(base_res.keys()),
+            season_lengths={name: res.get("season_length") for name, res in base_res.items()},
             context_dates=train_df["ds"], context_y=train_df["y"].to_numpy(), forecast_dates=holdout_df["ds"],
             tfm_result=tfm_res, holdout_y=holdout_df["y"].to_numpy(), baseline_results=base_res,
             event_dates=event_dates,
@@ -798,14 +839,14 @@ heterogeneous series that breaks.
     categories = synthetic.list_categories()
     max_per_cat = min(len(synthetic.series_ids_in_category(c)) for c in categories)
 
-    left, right = st.columns([1, 3])
-    with left:
+    left, right = st.columns([1, 3], gap="large")
+    with left, st.container(border=True):
         per_category = st.slider(
             "Series per category (sampled)", 1, max_per_cat, min(3, max_per_cat), key="sum_n",
             help=f"{len(categories)} categories x N series. Series are spread evenly across each "
             f"category's {max_per_cat} instances, not just the first N.",
         )
-        model_choices = baseline_model_selector("sum", default=["SeasonalNaive", "AutoARIMA"])
+        model_choices = baseline_model_selector("sum", default=["SeasonalNaive", "AutoETS"])
         holdout_frac = st.slider("Holdout fraction of each series", 0.05, 0.4, 0.15, step=0.05, key="sum_holdout_frac")
         st.caption(f"Will run **{per_category * len(categories)} series** -- may take a few minutes for larger samples.")
         run = st.button("Run summary sweep", type="primary", key="sum_run")
@@ -959,8 +1000,8 @@ def tab_upload(model):
     date_guess = _guess_column(cols, ["date", "time", "ds", "dt"], cols[0])
     value_guess = _guess_column(numeric_cols or cols, ["y", "value", "sales", "target", "demand"], (numeric_cols or cols)[-1])
 
-    left, right = st.columns([1, 3])
-    with left:
+    left, right = st.columns([1, 3], gap="large")
+    with left, st.container(border=True):
         date_col = st.selectbox("Date column", cols, index=cols.index(date_guess), key="upload_date_col")
         value_col = st.selectbox(
             "Value column to forecast", cols, index=cols.index(value_guess), key="upload_value_col"
@@ -1002,7 +1043,7 @@ def tab_upload(model):
     if n_missing_y:
         st.warning(f"{n_missing_y} missing/non-numeric values in '{value_col}' were filled via interpolation.")
 
-    with left:
+    with left, st.container(border=True):
         holdout_len, context_len = holdout_context_controls("upload", n, freq)
         model_choices = baseline_model_selector("upload", default=["SeasonalNaive", "AutoETS"])
 
@@ -1043,7 +1084,7 @@ def tab_upload(model):
             upload_overview_fig.update_layout(showlegend=False, margin=_COMPACT_TOP_MARGIN)
             _add_zoom_rect(upload_overview_fig, upload_detail_fig, row=1, col=1)
 
-            col1, col2 = st.columns([0.6, 0.4])
+            col1, col2 = st.columns([0.5, 0.5])
             with col1:
                 st.plotly_chart(upload_overview_fig, use_container_width=True)
             with col2:
@@ -1053,6 +1094,7 @@ def tab_upload(model):
         else:
             render_fan_chart_pair(
                 title=title, key_prefix="upload", baseline_names=list(base_res.keys()),
+                season_lengths={name: res.get("season_length") for name, res in base_res.items()},
                 context_dates=train_df["ds"], context_y=train_y, forecast_dates=holdout_df["ds"],
                 tfm_result=tfm_res, holdout_y=holdout_y, baseline_results=base_res,
             )
@@ -1069,7 +1111,7 @@ def tab_upload(model):
 # ---------------------------------------------------------------------------
 
 
-APP_VERSION = "v0.1.32"
+APP_VERSION = "v0.1.40"
 
 
 def main():

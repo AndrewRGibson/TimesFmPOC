@@ -17,18 +17,17 @@ INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#898781"
 GRIDLINE = "#e1e0d9"
 
-COLOR_ACTUAL = "#0b0b0b"
+COLOR_ACTUAL = "#67665f"  # midway between INK_PRIMARY and COLOR_CONTEXT -- visible but no longer overpowers everything else
 COLOR_CONTEXT = "#c3c2b7"
 COLOR_TIMESFM = "#2a78d6"
 # Ordered so the two lower-contrast hues in this palette (magenta, aqua -- both
 # measured below 3:1 contrast on a light surface) land on Theta/MSTL, the two
 # baselines that are opt-in rather than selected by default, while the
-# default-shown/most-common baselines (SeasonalNaive, AutoETS, AutoARIMA) get the
-# higher-contrast hues (orange, green, violet).
+# default-shown baselines (SeasonalNaive, AutoETS) get the higher-contrast hues
+# (orange, green).
 BASELINE_COLORS = {
     "SeasonalNaive": "#eb6834",  # orange
     "AutoETS": "#008300",  # green
-    "AutoARIMA": "#4a3aa7",  # violet
     "Theta": "#e87ba4",  # magenta (lower contrast -- opt-in model)
     "MSTL": "#1baf7a",  # aqua (lower contrast -- opt-in model)
 }
@@ -152,7 +151,7 @@ def _add_fan_traces(
         fig.add_trace(
             go.Scatter(
                 x=forecast_dates, y=holdout_y, name="Actual (holdout)", mode="lines",
-                line=dict(color=COLOR_ACTUAL, width=1.5),
+                line=dict(color=COLOR_ACTUAL, width=1.0),
             ),
             row=row, col=col,
         )
