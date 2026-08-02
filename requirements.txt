@@ -1,0 +1,14 @@
+timesfm[torch]==2.0.2
+# NOTE: intentionally NOT installing timesfm's "xreg" extra -- it pins jax[cuda],
+# which has no Windows wheels and makes pip backtrack to an ancient jax with no
+# jaxlib at all. We install the same runtime deps (jax[cpu], jaxlib, scikit-learn)
+# directly instead, which is all xreg_lib.py actually needs.
+jax[cpu]>=0.11.0
+jaxlib>=0.11.0
+statsforecast==2.1.1
+streamlit==1.44.1
+plotly>=6.1.1  # >=6.1.1 required for kaleido 1.x static-image export (used for dev-time chart QA)
+pandas>=2.2
+numpy>=1.26
+scikit-learn>=1.4
+statsmodels>=0.14  # OLS regression diagnostics for the elasticity comparison (coefficient, SE, p-value, R²)
