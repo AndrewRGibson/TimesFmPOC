@@ -6,10 +6,13 @@ columns. Series are grouped into categories, several of which are
 deliberately "hard to forecast" (very short history, abrupt level shifts,
 overlapping seasonal cycles, intermittent demand, volatility regime change).
 
-Each category has ~10 instances spanning daily/weekly/monthly/annual frequency
-and varying scale, trend direction, and (where applicable) seasonality/noise, so
-switching between series is a meaningful exploration rather than cosmetic
-variation on one template.
+Each category has ~5 instances spanning weekly/monthly/annual frequency (daily
+is reserved for the "hard to forecast" categories -- see HARD_CATEGORIES in
+app.py -- since daily data in this catalog always carries a real annual cycle
+on top of any weekly one, a multi-cycle case rather than the simple one
+"Standard" is for) and varying scale, trend direction, and (where applicable)
+seasonality/noise, so switching between series is a meaningful exploration
+rather than cosmetic variation on one template.
 """
 
 from __future__ import annotations
@@ -414,17 +417,23 @@ def make_retail_covariates(
 
 
 # ---------------------------------------------------------------------------
-# Catalog: ~10 instances per category, spanning frequency/scale/trend/etc.
+# Catalog: ~5 instances per category, spanning frequency/scale/trend/etc.
 # ---------------------------------------------------------------------------
 
 
 def _build_catalog() -> dict[str, SeriesSpec]:
     catalog: dict[str, SeriesSpec] = {}
-    N = 10
+    N = 5
 
-    # Standard: spread round-robin across daily/weekly/monthly/annual (stays balanced
-    # regardless of N), varying scale/trend/seasonality across instances.
-    std_freqs = ("D", "W", "MS", "YS")
+    # Standard: spread round-robin across weekly/monthly/annual (stays balanced
+    # regardless of N), varying scale/trend/seasonality across instances. Daily
+    # deliberately excluded -- see synthetic.py's module docstring and the
+    # baselines.py seasonal-strength work: daily data in this catalog always has
+    # a real (often dominant) annual cycle riding on top of any weekly one, which
+    # makes it a multi-cycle case, not the simple one this category is for. Every
+    # HARD_CATEGORIES category already includes daily instances, which is where
+    # that complexity belongs instead.
+    std_freqs = ("W", "MS", "YS")
     for i, (scale, trend, seasonal) in enumerate(
         _cycle_combos(N, (20.0, 100.0, 600.0), ("up", "down", "flat"), (True, False))
     ):
@@ -467,7 +476,10 @@ def _build_catalog() -> dict[str, SeriesSpec]:
         catalog[s.series_id] = s
 
     for i, (freq, scale, inflection_frac) in enumerate(
-        _cycle_combos(N // 2, ("D", "W", "MS"), (10.0, 30.0, 80.0), (0.80, 0.85, 0.90))
+        # Ceil here, floor below -- so the two halves of "Growth & decay traps"
+        # sum to N even when N is odd (e.g. 3+2=5), instead of both flooring and
+        # quietly leaving the category one short.
+        _cycle_combos(-(-N // 2), ("D", "W", "MS"), (10.0, 30.0, 80.0), (0.80, 0.85, 0.90))
     ):
         s = make_exponential_growth(seed=8000 + i, freq=freq, scale=scale, inflection_frac=inflection_frac, name_suffix=_label(i))
         catalog[s.series_id] = s

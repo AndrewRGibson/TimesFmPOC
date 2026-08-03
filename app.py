@@ -1,11 +1,12 @@
 """TimesFM 2.5 forecasting POC -- Streamlit app.
 
-Five workspaces:
-  1. Fit & Forecast          -- "Standard" series, holdout, TimesFM quantile fan vs classical baselines
+Six workspaces:
+  1. Simple Time-Series      -- "Standard" series, holdout, TimesFM quantile fan vs classical baselines
   2. Covariates & Elasticity -- retail series with price/promo/holiday XReg covariates
   3. Hard-to-Forecast Gallery-- short/level-shift/overlapping-cycle/intermittent/volatility/growth-decay series
   4. Summary                 -- M4/M5-style scale-free accuracy aggregated across every category
   5. Upload Your Own Data    -- run the same pipeline on a user-supplied CSV
+  6. Changelog               -- renders CHANGELOG.md
 """
 
 from __future__ import annotations
@@ -268,6 +269,7 @@ def metrics_table(holdout_y: np.ndarray, train_y: np.ndarray, season_length: int
             row["80% coverage %"] = metrics.coverage(holdout_y, q[0.1], q[0.9])
             row["80% coverage SE %"] = metrics.coverage_se(holdout_y, q[0.1], q[0.9])
             row["80% width"] = metrics.interval_width(q[0.1], q[0.9])
+            row["scaled width"] = metrics.scaled_interval_width(q[0.1], q[0.9], train_y, season_length)
         quantile_only = {k: v for k, v in q.items() if isinstance(k, float)}
         if quantile_only:
             row["avg pinball"] = metrics.mean_pinball_loss(holdout_y, quantile_only)
@@ -495,7 +497,6 @@ def render_fan_chart_pair(
 
 
 def tab_fit_forecast(model):
-    st.subheader("Fit & Forecast")
     st.caption(
         "General-purpose forecasting on the 'Standard' series (trend + seasonality, easy baseline "
         "cases). Covariate series and the deliberately hard-to-forecast categories have their own "
@@ -537,7 +538,6 @@ def tab_fit_forecast(model):
 
 
 def tab_covariates(model):
-    st.subheader("Covariates & Elasticity")
     st.caption(
         "Retail-style series with price / promotion / holiday covariates, forecast via TimesFM's XReg support. "
         "Elasticity is estimated by perturbing the horizon-period price and re-forecasting (finite-difference), "
@@ -709,7 +709,6 @@ HARD_CATEGORIES = [
 
 
 def tab_gallery(model):
-    st.subheader("Hard-to-Forecast Gallery")
     st.caption(
         "Deliberately difficult scenarios: very short history, abrupt structural breaks (red dashed "
         "markers), multiple non-integer seasonal cycles, sparse/bursty demand, sudden volatility "
@@ -766,8 +765,29 @@ def _sample_series_ids(per_category: int) -> list[str]:
     return sample
 
 
+def _aggregate_summary(df: pd.DataFrame, group_cols: list[str], metric_cols: list[str]) -> pd.DataFrame:
+    """Simple mean per metric, EXCEPT '80% coverage %', which is weighted by
+    each row's holdout length (n_holdout). Coverage is an empirical hit rate,
+    so pooling by point count -- not one equally-weighted number per series
+    regardless of how many holdout points backed it -- is the standard way to
+    combine proportions from groups of very different sample sizes: a 4-point
+    annual series' coverage estimate is far noisier than a 150-point daily
+    one's (see the '80% coverage SE %' column on the per-series tables), and
+    shouldn't move the aggregate just as much as the daily series does."""
+    def agg(group: pd.DataFrame) -> pd.Series:
+        out = {}
+        for col in metric_cols:
+            valid = group[col].notna()
+            if col == "80% coverage %" and valid.any():
+                out[col] = np.average(group.loc[valid, col], weights=group.loc[valid, "n_holdout"])
+            else:
+                out[col] = group.loc[valid, col].mean()
+        return pd.Series(out)
+
+    return df.groupby(group_cols, sort=False).apply(agg, include_groups=False).reset_index()
+
+
 def tab_summary(model):
-    st.subheader("Summary: Performance Across All Series")
     st.caption(
         "Runs TimesFM (and optionally classical baselines) across a sample of series from every "
         "category and aggregates accuracy by category and overall. Each series needs its own forecast "
@@ -808,7 +828,13 @@ one scoreboard:
   hierarchy; here left unweighted since these are independent series, not a
   hierarchy). It shares MASE's scale-free property but penalizes large misses
   more heavily.
-- **80% coverage** is already a percentage, so it was safe to average as-is.
+- **80% coverage** is already a percentage, so it's scale-free -- but it's still
+  weighted by each series' holdout length here, not averaged one-series-one-vote.
+  Coverage is an empirical hit rate, and a 4-point annual series' coverage estimate
+  is far noisier than a 150-point daily one's (see "80% coverage SE %" on the
+  per-series tables); pooling by point count is the standard way to combine rates
+  from groups of very different sample sizes, and keeps a handful of tiny holdouts
+  from swinging the aggregate as much as one large one.
 - **Scaled pinball loss** applies the same MASE-style scaling to the average
   pinball (quantile) loss -- the spirit of M4's MSIS uncertainty metric -- so
   quantile-forecast quality is comparable across series too.
@@ -887,11 +913,13 @@ heterogeneous series that breaks.
                 row = {
                     "category": spec.category,
                     "model": model_name,
+                    "n_holdout": len(holdout_y),
                     "MASE": metrics.mase(holdout_y, point, train_y, season_length),
                     "RMSSE": metrics.rmsse(holdout_y, point, train_y, season_length),
                 }
                 if 0.1 in q and 0.9 in q:
                     row["80% coverage %"] = metrics.coverage(holdout_y, q[0.1], q[0.9])
+                    row["scaled width"] = metrics.scaled_interval_width(q[0.1], q[0.9], train_y, season_length)
                 quantile_only = {k: v for k, v in q.items() if isinstance(k, float)}
                 if quantile_only:
                     row["scaled pinball"] = metrics.scaled_pinball_loss(holdout_y, quantile_only, train_y, season_length)
@@ -903,7 +931,7 @@ heterogeneous series that breaks.
             return
 
         results_df = pd.DataFrame(rows)
-        metric_cols = [c for c in results_df.columns if c not in ("category", "model")]
+        metric_cols = [c for c in results_df.columns if c not in ("category", "model", "n_holdout")]
         col_config = {
             c: st.column_config.NumberColumn(c, help=metrics.METRIC_INFO[c], format="%.2f")
             for c in metric_cols
@@ -911,11 +939,11 @@ heterogeneous series that breaks.
         }
 
         st.markdown("### By category")
-        by_cat = results_df.groupby(["category", "model"], sort=False)[metric_cols].mean().reset_index()
+        by_cat = _aggregate_summary(results_df, ["category", "model"], metric_cols)
         st.dataframe(by_cat, use_container_width=True, hide_index=True, column_config=col_config)
 
         st.markdown("### Overall (all sampled series)")
-        overall = results_df.groupby("model", sort=False)[metric_cols].mean().reset_index()
+        overall = _aggregate_summary(results_df, ["model"], metric_cols)
         st.dataframe(overall, use_container_width=True, hide_index=True, column_config=col_config)
 
         chart_metric = st.selectbox("Metric to chart by category", metric_cols, key="sum_chart_metric")
@@ -951,8 +979,15 @@ MAX_UPLOAD_COLS = 30
 MAX_COVARIATES = 10
 
 
+def tab_changelog():
+    changelog_path = Path(__file__).parent / "CHANGELOG.md"
+    try:
+        st.markdown(changelog_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        st.info("No CHANGELOG.md found next to app.py.")
+
+
 def tab_upload(model):
-    st.subheader("Upload Your Own Data")
     st.caption(
         "Upload a CSV with a date column and a numeric value column to run it through the same "
         "pipeline used for the synthetic series -- TimesFM (point + quantile) vs classical baselines, "
@@ -1111,7 +1146,7 @@ def tab_upload(model):
 # ---------------------------------------------------------------------------
 
 
-APP_VERSION = "v0.1.40"
+APP_VERSION = "v0.1.43"
 
 
 def main():
@@ -1121,8 +1156,11 @@ def main():
         "on synthetic series with known ground truth."
     )
     model = get_model()
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Fit & Forecast", "Covariates & Elasticity", "Hard-to-Forecast Gallery", "Summary", "Upload Your Own Data"]
+    t1, t2, t3, t4, t5, t6 = st.tabs(
+        [
+            "Simple Time-Series", "Covariates & Elasticity", "Hard-to-Forecast Gallery", "Summary",
+            "Upload Your Own Data", "Changelog",
+        ]
     )
     with t1:
         tab_fit_forecast(model)
@@ -1134,6 +1172,8 @@ def main():
         tab_summary(model)
     with t5:
         tab_upload(model)
+    with t6:
+        tab_changelog()
 
 
 if __name__ == "__main__":

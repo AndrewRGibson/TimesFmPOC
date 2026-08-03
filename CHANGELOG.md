@@ -214,3 +214,78 @@ this isn't a clean, isolated duration)
   benchmarked (see v0.1.38) at over 6 minutes for a single fit at a
   365-day period -- fundamentally incompatible with an app that
   re-forecasts on every widget change.
+
+## v0.1.41 -- 2026-08-03
+
+**Time:** ~20 min
+
+### Changed
+- Renamed the "Fit & Forecast" tab to "Simple Time-Series".
+- Added a "Changelog" tab that renders this file directly, instead of it
+  only being readable from the repo.
+- Main forecast fan charts (overview/detail pairs) are 20% shorter
+  (360px vs Plotly's 450px default) so more fits on the page. Scoped
+  narrowly to the charts that already drop their legend/use a compact
+  margin (`_COMPACT_TOP_MARGIN`) -- verified directly via a first attempt
+  at a global height cut (through the shared `LAYOUT_DEFAULTS`), which
+  clipped the title and y-axis label on `calibration_chart` and would
+  have done the same to `elasticity_chart`/`summary_bar_chart`: those
+  keep a real legend and a taller default margin that a global height
+  cut doesn't leave enough room for.
+- Dropped the redundant `st.subheader` title at the top of every tab
+  (e.g. "Fit & Forecast", "Summary: Performance Across All Series") --
+  the tab selector already names the page; each tab's descriptive
+  caption is unchanged and still explains what it does.
+- Summary tab's "80% coverage %" aggregation (by category and overall)
+  is now weighted by each row's holdout length instead of averaged one
+  series/model = one vote. Coverage is an empirical hit rate, so pooling
+  by point count is the statistically standard way to combine rates from
+  groups of very different sample sizes -- verified directly: a 4-point
+  series at 0% coverage averaged against a 200-point series at 82%
+  coverage now aggregates to ~80.4% (correctly close to the pooled true
+  rate), not the naive 41% a plain mean-of-means would give, which let a
+  single tiny, noisy holdout swing the aggregate as much as a large,
+  reliable one. Only coverage changed -- MASE/RMSSE/scaled pinball stay
+  simple per-series averages, which is still the right call for those
+  (see the updated in-app explanation on the Summary tab).
+
+## v0.1.42 -- 2026-08-03
+
+**Time:** ~5 min
+
+### Added
+- "scaled width" metric: the 80% interval width divided by the same
+  in-sample seasonal-naive scale MASE/scaled-pinball already use, making
+  it comparable across series of different magnitude (plain "80% width"
+  is in the series' own units, same limitation as MAE/RMSE). Answers the
+  "is that just scaled pinball?" question from last revision -- no,
+  scaled pinball jointly measures calibration and sharpness together;
+  this isolates sharpness (band width) alone, meant to be read alongside
+  "80% coverage %" rather than replace it. Shown on the per-series
+  metrics tables and included in the Summary tab's sweep (simple
+  per-series average there, like MASE/RMSSE -- not weighted by holdout
+  length like coverage, since it's a ratio rather than a hit rate).
+
+## v0.1.43 -- 2026-08-03
+
+**Time:** ~24 min
+
+### Changed
+- "Standard" category no longer includes daily-frequency series (now
+  weekly/monthly/annual only) -- daily data in this catalog always
+  carries a real (often dominant) annual cycle on top of any weekly one
+  (see the v0.1.40 seasonal-strength work), making it a multi-cycle case
+  rather than the simple one "Standard"/"Simple Time-Series" is for.
+  Every `HARD_CATEGORIES` category (Short series, Level shift,
+  Overlapping cycles, Intermittent demand, Volatility regime change,
+  Growth & decay traps) already included daily instances and keeps them
+  -- that's where daily's complexity now exclusively lives. "Covariates /
+  elasticity" is intentionally unchanged (still Daily+Weekly): it's tied
+  to its own tab's elasticity/XReg UI which the Gallery tab doesn't
+  render, and daily retail data is realistic rather than a "hard"
+  edge case.
+- Catalog size per category dropped from ~10 to ~5 instances (40 total
+  series, down from 80). "Growth & decay traps" (built from two
+  sub-generators, exponential growth + rapid decay) splits 3/2 rather
+  than a flooring 2/2, so it still totals 5 rather than quietly landing
+  one short.

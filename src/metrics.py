@@ -120,6 +120,22 @@ def scaled_pinball_loss(
     return mean_pinball_loss(actual, quantiles) / naive_seasonal_scale(train_y, season_length)
 
 
+def scaled_interval_width(
+    lower: np.ndarray, upper: np.ndarray, train_y: np.ndarray, season_length: int = 1
+) -> float:
+    """The 80% interval's width (see interval_width), scaled by the same
+    in-sample seasonal-naive denominator as MASE/scaled pinball -- unlike plain
+    '80% width' (in the series' own units, not comparable across series of
+    different scale, exactly like MAE/RMSE), this is safe to average across a
+    mixed set of series. Reads as "the band is N times as wide as the series'
+    typical single-period change" -- e.g. 2.0 means an 80% band roughly twice
+    the size of a normal period-to-period move. Purely a sharpness measure
+    (how hedged the uncertainty is), independent of whether that band is well
+    calibrated -- always read alongside '80% coverage %', which scaled pinball
+    (calibration + sharpness combined into one number) doesn't separate out."""
+    return interval_width(lower, upper) / naive_seasonal_scale(train_y, season_length)
+
+
 # Column-name -> tooltip text, for surfacing in the UI (st.dataframe column_config help=).
 METRIC_INFO: dict[str, str] = {
     "MASE": (
@@ -192,7 +208,17 @@ METRIC_INFO: dict[str, str] = {
         "Average width of the 10th-90th percentile forecast band, in the series' own units. "
         "Strength: shows how confident (narrow) or hedged (wide) the model's uncertainty is. "
         "Weakness: width alone says nothing about calibration -- a band can be narrow and still wrong, "
-        "or wide and still miss; always read alongside coverage %."
+        "or wide and still miss; always read alongside coverage %. Not comparable across series of "
+        "different scale (like MAE/RMSE) -- see 'scaled width' for that."
+    ),
+    "scaled width": (
+        "The same thing as '80% width', divided by the same yardstick MASE uses -- the series' typical "
+        "single-period change -- so it's comparable across series of very different scale, which is why "
+        "this column (not '80% width') is the one used in the Summary tab's cross-category averages. "
+        "Reads as a multiple: 2.0 means the band is about twice as wide as a normal period-to-period "
+        "move. Strength: scale-free sharpness measure. Weakness: still says nothing about calibration on "
+        "its own -- always read alongside '80% coverage %'; a model can score a great (narrow) scaled "
+        "width by simply being overconfident."
     ),
     "avg pinball": (
         "Measures the quality of the whole uncertainty band, not just the point forecast. For each "

@@ -227,7 +227,7 @@ def fan_chart(
         fig, context_dates, context_y, forecast_dates, tfm_result, holdout_y, baseline_results,
         event_dates, zoom, context_window, visible=visible,
     )
-    fig.update_layout(title=_title(title), **LAYOUT_DEFAULTS)
+    fig.update_layout(title=_title(title), **LAYOUT_DEFAULTS, height=360)  # 20% shorter than the 450px default
 
     if zoom:
         quantiles = tfm_result["quantiles"]
@@ -317,7 +317,8 @@ def covariate_fan_chart(
             fig.update_yaxes(row=r, col=1, **AXIS_DEFAULTS)
         fig.update_xaxes(row=r, col=1, **AXIS_DEFAULTS)
 
-    fig.update_layout(title=_title(title), **LAYOUT_DEFAULTS, height=420 + 130 * n_cov)
+    covariate_layout_defaults = {**LAYOUT_DEFAULTS, "height": round(0.8 * (420 + 130 * n_cov))}
+    fig.update_layout(title=_title(title), **covariate_layout_defaults)
     for ann in fig["layout"]["annotations"][: 1 + n_cov]:
         ann["font"] = dict(size=12, color=INK_SECONDARY)
 
