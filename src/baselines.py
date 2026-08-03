@@ -16,7 +16,7 @@ import statsmodels.api as sm
 from scipy import stats
 from statsforecast import StatsForecast
 from statsforecast.models import AutoETS, MSTL, SeasonalNaive, Theta
-from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.seasonal import STL, seasonal_decompose
 
 LEVELS = [20, 40, 60, 80]
 
@@ -202,7 +202,16 @@ def _build_model(name: str, n: int, freq: str, season_length: int):
     if name == "SeasonalNaive":
         return SeasonalNaive(season_length=season_length)
     if name == "AutoETS":
-        return AutoETS(season_length=season_length)
+        # AutoETS's default model="ZZZ" (full auto search over error/trend/season)
+        # is verified to sometimes discard a real, strong seasonal signal: on this
+        # app's own standard_1000 series, 'ZZZ' picked ETS(A,Ad,N) at AIC=1167.5,
+        # while forcing an additive season with model="ZZA" found ETS(A,A,A) at
+        # AIC=1155.9 -- decisively better, just never reached by the full search.
+        # Since we've already independently confirmed real seasonality via
+        # detect_season_length's STL-based test whenever season_length > 1, force
+        # the search to use it rather than risk 'ZZZ' silently dropping it again.
+        model_spec = "ZZA" if season_length > 1 else "ZZZ"
+        return AutoETS(season_length=season_length, model=model_spec)
     if name == "Theta":
         return Theta(season_length=season_length)
     if name == "MSTL":
@@ -275,6 +284,42 @@ def _fit_exponential_trend_baseline(y: np.ndarray, horizon: int) -> dict:
     return {"point": np.exp(log_point), "quantiles": quantiles, "error": None}
 
 
+def _fit_theta_forced_seasonal(df: pd.DataFrame, horizon: int, freq: str, season_length: int) -> dict:
+    """Wraps nixtla's Theta with our own pre-deseasonalization, bypassing its
+    built-in seasonality test -- verified directly to be unreliable on trending
+    data: it only checks whether the ACF *at exactly lag season_length* clears a
+    Bartlett-formula threshold, which on this app's own standard_1000 series
+    scored a ratio of 1.25 against a 1.645 cutoff (not "significant"), even
+    though detect_season_length's STL-based test found a strength of 0.898 --
+    unambiguously seasonal. A trend inflates ACF at every lag, which is exactly
+    what makes this kind of undetrended, single-lag test unreliable.
+
+    Since we've already independently confirmed real seasonality whenever this
+    function is called (season_length > 1), decompose it ourselves with the
+    same statsmodels routine Theta would have used internally, fit plain Theta
+    on the deseasonalized series, then add the (repeating) seasonal component
+    back onto both the point forecast and every quantile -- shifting the whole
+    band together, not just the point.
+    """
+    y = df["y"].to_numpy()
+    seasonal = np.asarray(
+        seasonal_decompose(y, model="additive", period=season_length, extrapolate_trend="freq").seasonal
+    )
+    sf_df = pd.DataFrame({"unique_id": "series", "ds": df["ds"].values, "y": y - seasonal})
+    sf = StatsForecast(models=[Theta(season_length=1)], freq=freq, n_jobs=1)
+    fc = sf.forecast(df=sf_df, h=horizon, level=LEVELS)
+    # The last full cycle of `seasonal` is already phase-aligned to end at the
+    # series' last observed point, so tiling it forward reproduces the correct
+    # phase for every future step.
+    future_seasonal = seasonal[-season_length:][np.arange(horizon) % season_length]
+    point = fc["Theta"].to_numpy() + future_seasonal
+    quantiles: dict[float, np.ndarray] = {0.5: point.copy()}
+    for level, (qlo, qhi) in _LEVEL_TO_QUANTILES.items():
+        quantiles[qlo] = fc[f"Theta-lo-{level}"].to_numpy() + future_seasonal
+        quantiles[qhi] = fc[f"Theta-hi-{level}"].to_numpy() + future_seasonal
+    return {"point": point, "quantiles": quantiles, "error": None}
+
+
 def run_baselines(
     df: pd.DataFrame, horizon: int, model_names: list[str] | None = None, freq: str = "D"
 ) -> dict[str, dict]:
@@ -314,15 +359,20 @@ def run_baselines(
             results[name]["season_length"] = _tag_season_length(name)
             continue
         try:
-            model = _build_model(name, n, freq, season_length)
-            sf = StatsForecast(models=[model], freq=freq, n_jobs=1)
-            fc = sf.forecast(df=sf_df, h=horizon, level=LEVELS)
-            point = fc[name].to_numpy()
-            quantiles: dict[float, np.ndarray] = {0.5: point.copy()}
-            for level, (qlo, qhi) in _LEVEL_TO_QUANTILES.items():
-                quantiles[qlo] = fc[f"{name}-lo-{level}"].to_numpy()
-                quantiles[qhi] = fc[f"{name}-hi-{level}"].to_numpy()
-            results[name] = {"point": point, "quantiles": quantiles, "error": None}
+            if name == "Theta" and season_length > 1:
+                # Bypasses Theta's own unreliable seasonality test -- see
+                # _fit_theta_forced_seasonal's docstring for the verified failure.
+                results[name] = _fit_theta_forced_seasonal(df, horizon, freq, season_length)
+            else:
+                model = _build_model(name, n, freq, season_length)
+                sf = StatsForecast(models=[model], freq=freq, n_jobs=1)
+                fc = sf.forecast(df=sf_df, h=horizon, level=LEVELS)
+                point = fc[name].to_numpy()
+                quantiles: dict[float, np.ndarray] = {0.5: point.copy()}
+                for level, (qlo, qhi) in _LEVEL_TO_QUANTILES.items():
+                    quantiles[qlo] = fc[f"{name}-lo-{level}"].to_numpy()
+                    quantiles[qhi] = fc[f"{name}-hi-{level}"].to_numpy()
+                results[name] = {"point": point, "quantiles": quantiles, "error": None}
         except Exception as exc:  # noqa: BLE001 - surfaced in UI, not swallowed silently
             results[name] = {"point": None, "quantiles": None, "error": str(exc)}
         results[name]["season_length"] = _tag_season_length(name)

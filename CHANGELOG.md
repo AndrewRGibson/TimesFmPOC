@@ -289,3 +289,39 @@ this isn't a clean, isolated duration)
   sub-generators, exponential growth + rapid decay) splits 3/2 rather
   than a flooring 2/2, so it still totals 5 rather than quietly landing
   one short.
+
+## v0.1.44 -- 2026-08-03
+
+**Time:** ~13 min
+
+### Fixed
+- AutoETS and Theta were both silently failing to pick up real, strong
+  seasonality despite correctly detecting and displaying the right lag
+  -- confirmed as two separate upstream nixtla bugs, not a false alarm,
+  using the first weekly "Simple Time-Series" series (`standard_1000`,
+  52-week detected lag) as the reproduction case:
+  - **AutoETS**: its default `model="ZZZ"` full search chose
+    `ETS(A,Ad,N)` (no season) at AIC=1167.5, while forcing an additive
+    seasonal search (`model="ZZA"`) found `ETS(A,A,A)` at AIC=1155.9 --
+    decisively better, but never reached by the unconstrained search.
+    Fixed by passing `model="ZZA"` whenever `detect_season_length` has
+    already confirmed real seasonality (season_length > 1); `season_length
+    == 1` keeps the original unconstrained `"ZZZ"` search.
+  - **Theta**: its built-in seasonality test only checks whether the ACF
+    at exactly lag `season_length` clears a Bartlett-formula threshold --
+    on `standard_1000` that scored 1.25 against a 1.645 cutoff ("not
+    significant"), even though our own STL-based test found a strength
+    of 0.898. A trend inflates ACF at every lag, which is exactly what
+    makes this kind of single-lag, undetrended test unreliable. Fixed by
+    pre-deseasonalizing with the same `statsmodels.seasonal_decompose`
+    Theta uses internally whenever we've already confirmed seasonality,
+    fitting plain Theta on the deseasonalized series, then adding the
+    (correctly phase-aligned, repeating) seasonal component back onto
+    the point forecast and every quantile.
+  - Verified directly on `standard_1000`: MASE improved from what a flat,
+    non-seasonal forecast would score (>1) to 0.28 (AutoETS) and 0.36
+    (Theta) -- now in the same range as MSTL (0.31) and LinearRegression
+    (0.27), a coherent picture across all four seasonal-aware baselines
+    instead of two working and two silently broken. Re-verified on a
+    second weekly series and spot-checked monthly/annual/daily frequencies
+    for regressions -- none found.
