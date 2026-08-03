@@ -11,6 +11,7 @@ Six workspaces:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -274,14 +275,21 @@ def metrics_table(holdout_y: np.ndarray, train_y: np.ndarray, season_length: int
         if quantile_only:
             row["avg pinball"] = metrics.mean_pinball_loss(holdout_y, quantile_only)
             row["scaled pinball"] = metrics.scaled_pinball_loss(holdout_y, quantile_only, train_y, season_length)
+        row["calculation ms"] = res.get("calc_ms")
         rows.append(row)
     return pd.DataFrame(rows).set_index("model")
+
+
+# Most metric columns are ratios/percentages best read to 2 decimal places;
+# calculation time is a millisecond count where sub-millisecond precision is
+# just noise, so it gets its own coarser format.
+_METRIC_FORMATS = {"calculation ms": "%.0f"}
 
 
 def render_metrics_table(holdout_y: np.ndarray, train_y: np.ndarray, season_length: int, results: dict[str, dict]) -> None:
     table = metrics_table(holdout_y, train_y, season_length, results)
     col_config = {
-        col: st.column_config.NumberColumn(col, help=metrics.METRIC_INFO[col], format="%.2f")
+        col: st.column_config.NumberColumn(col, help=metrics.METRIC_INFO[col], format=_METRIC_FORMATS.get(col, "%.2f"))
         for col in table.columns
         if col in metrics.METRIC_INFO
     }
@@ -524,7 +532,7 @@ def tab_fit_forecast(model):
         )
 
         all_results = {"TimesFM": tfm_res, **base_res}
-        st.markdown("**Accuracy on holdout**")
+        st.markdown("**Accuracy & calculation time on holdout**")
         season_length = baselines.DEFAULT_SEASON_LENGTH.get(spec.freq, 1)
         render_metrics_table(holdout_df["y"].to_numpy(), train_df["y"].to_numpy(), season_length, all_results)
 
@@ -601,7 +609,7 @@ def tab_covariates(model):
                 use_container_width=True, hide_index=True,
             )
 
-        st.markdown("**Accuracy on holdout: covariates vs no covariates**")
+        st.markdown("**Accuracy & calculation time on holdout: covariates vs no covariates**")
         season_length = baselines.DEFAULT_SEASON_LENGTH.get(spec.freq, 1)
         render_metrics_table(
             holdout_df["y"].to_numpy(), train_df["y"].to_numpy(), season_length,
@@ -740,7 +748,7 @@ def tab_gallery(model):
         )
 
         all_results = {"TimesFM": tfm_res, **base_res}
-        st.markdown("**Accuracy on holdout**")
+        st.markdown("**Accuracy & calculation time on holdout**")
         season_length = baselines.DEFAULT_SEASON_LENGTH.get(spec.freq, 1)
         render_metrics_table(holdout_df["y"].to_numpy(), train_df["y"].to_numpy(), season_length, all_results)
 
@@ -753,16 +761,21 @@ def tab_gallery(model):
 # ---------------------------------------------------------------------------
 
 
-def _sample_series_ids(per_category: int) -> list[str]:
-    """Evenly spread a sample of `per_category` series ids across each category's
-    full list, rather than always taking the first N (which would bias the sample
-    toward whatever scale/trend/freq combo happens to sort first)."""
-    sample: list[str] = []
-    for cat in synthetic.list_categories():
-        ids = synthetic.series_ids_in_category(cat)
-        step = max(1, len(ids) // per_category)
-        sample += [ids[i] for i in range(0, len(ids), step)][:per_category]
-    return sample
+PRECOMPUTED_SUMMARY_PATH = Path(__file__).parent / "data" / "summary_precomputed.json"
+
+
+@st.cache_data(show_spinner=False)
+def _load_precomputed_summary() -> dict | None:
+    """The Summary tab's data source -- generated offline by
+    scripts/precompute_summary.py (which shares its row-computation logic
+    with src/summary_compute.py, so this can't silently drift from what a
+    live sweep would produce), not recomputed on page load. See tab_summary
+    for why: a live sweep here used to re-run TimesFM + every baseline
+    across dozens of series on every visit, and on every widget interaction
+    anywhere in the app besides."""
+    if not PRECOMPUTED_SUMMARY_PATH.exists():
+        return None
+    return json.loads(PRECOMPUTED_SUMMARY_PATH.read_text(encoding="utf-8"))
 
 
 def _aggregate_summary(df: pd.DataFrame, group_cols: list[str], metric_cols: list[str]) -> pd.DataFrame:
@@ -787,11 +800,10 @@ def _aggregate_summary(df: pd.DataFrame, group_cols: list[str], metric_cols: lis
     return df.groupby(group_cols, sort=False).apply(agg, include_groups=False).reset_index()
 
 
-def tab_summary(model):
+def tab_summary():
     st.caption(
-        "Runs TimesFM (and optionally classical baselines) across a sample of series from every "
-        "category and aggregates accuracy by category and overall. Each series needs its own forecast "
-        "pass, so larger samples take longer -- results already computed in other tabs are reused instantly."
+        "TimesFM vs every classical baseline, aggregated by category and overall, across the whole "
+        "synthetic catalog. Precomputed offline (see the note below the tables) rather than run live."
     )
     st.markdown(
         """
@@ -861,102 +873,53 @@ when you're looking at one series at a time -- it's only *averaging* them across
 heterogeneous series that breaks.
 """
     )
-    catalog = synthetic.get_catalog()
-    categories = synthetic.list_categories()
-    max_per_cat = min(len(synthetic.series_ids_in_category(c)) for c in categories)
-
-    left, right = st.columns([1, 3], gap="large")
-    with left, st.container(border=True):
-        per_category = st.slider(
-            "Series per category (sampled)", 1, max_per_cat, min(3, max_per_cat), key="sum_n",
-            help=f"{len(categories)} categories x N series. Series are spread evenly across each "
-            f"category's {max_per_cat} instances, not just the first N.",
+    payload = _load_precomputed_summary()
+    if payload is None:
+        st.error(
+            f"No precomputed summary found at `{PRECOMPUTED_SUMMARY_PATH}`. Run "
+            "`python scripts/precompute_summary.py` to generate it."
         )
-        model_choices = baseline_model_selector("sum", default=["SeasonalNaive", "AutoETS"])
-        holdout_frac = st.slider("Holdout fraction of each series", 0.05, 0.4, 0.15, step=0.05, key="sum_holdout_frac")
-        st.caption(f"Will run **{per_category * len(categories)} series** -- may take a few minutes for larger samples.")
-        run = st.button("Run summary sweep", type="primary", key="sum_run")
-
-    if not run and "sum_ran" not in st.session_state:
-        with right:
-            st.info("Configure the sample size and click **Run summary sweep**.")
         return
-    st.session_state["sum_ran"] = True
 
-    with right:
-        sample_ids = _sample_series_ids(per_category)
-        progress = st.progress(0.0, text="Starting sweep...")
-        rows = []
-        for i, sid in enumerate(sample_ids):
-            spec = catalog[sid]
-            n = len(spec.df)
-            holdout_len = max(1, min(n - 1, forecasting.MAX_HORIZON - 1, round(n * holdout_frac)))
-            context_len = max(1, n - holdout_len)
+    rows = payload["rows"]
+    if not rows:
+        st.warning("Precomputed summary file has no rows -- every forecast in it errored.")
+        return
 
-            progress.progress(i / len(sample_ids), text=f"{i + 1}/{len(sample_ids)}: {spec.name}")
-            tfm_res = cached_tfm_forecast(model, sid, holdout_len, context_len)
-            base_res = cached_baselines(sid, holdout_len, context_len, tuple(model_choices)) if model_choices else {}
+    results_df = pd.DataFrame(rows)
+    metric_cols = [c for c in results_df.columns if c not in ("category", "model", "n_holdout")]
+    col_config = {
+        c: st.column_config.NumberColumn(c, help=metrics.METRIC_INFO[c], format=_METRIC_FORMATS.get(c, "%.2f"))
+        for c in metric_cols
+        if c in metrics.METRIC_INFO
+    }
 
-            _spec, train_df, holdout_df = _train_holdout(sid, holdout_len, context_len)
-            train_y = train_df["y"].to_numpy()
-            holdout_y = holdout_df["y"].to_numpy()
-            season_length = baselines.DEFAULT_SEASON_LENGTH.get(spec.freq, 1)
-            all_results = {"TimesFM": tfm_res, **base_res}
-            for model_name, res in all_results.items():
-                if res.get("error"):
-                    continue
-                point = res["point"]
-                q = res["quantiles"]
-                # Scale-free metrics only -- MAE/RMSE/MAPE/sMAPE are deliberately excluded
-                # here (see the explanation above): they aren't meaningful once averaged
-                # across series of very different scale and sparsity.
-                row = {
-                    "category": spec.category,
-                    "model": model_name,
-                    "n_holdout": len(holdout_y),
-                    "MASE": metrics.mase(holdout_y, point, train_y, season_length),
-                    "RMSSE": metrics.rmsse(holdout_y, point, train_y, season_length),
-                }
-                if 0.1 in q and 0.9 in q:
-                    row["80% coverage %"] = metrics.coverage(holdout_y, q[0.1], q[0.9])
-                    row["scaled width"] = metrics.scaled_interval_width(q[0.1], q[0.9], train_y, season_length)
-                quantile_only = {k: v for k, v in q.items() if isinstance(k, float)}
-                if quantile_only:
-                    row["scaled pinball"] = metrics.scaled_pinball_loss(holdout_y, quantile_only, train_y, season_length)
-                rows.append(row)
-        progress.empty()
+    generated_at = payload.get("generated_at", "unknown time")
+    st.caption(
+        f"Precomputed over **{payload.get('n_series', '?')}** of {payload.get('n_catalog_series', '?')} total "
+        f"series ({payload.get('per_category', '?')} per category), holdout = "
+        f"{payload.get('holdout_frac', 0) * 100:.0f}% of each series' own length -- generated {generated_at}. "
+        "Fixed configuration, not user-adjustable here: this tab used to re-run TimesFM + every baseline live on "
+        "every visit, which was slow (many fast per-series forecasts add up across dozens of series) and "
+        "re-ran on every widget interaction anywhere in the app, not just an explicit 'run' click. The other "
+        "tabs still forecast on demand for whichever single series you pick -- only this cross-series rollup "
+        "is precomputed. Re-run `scripts/precompute_summary.py` after changing the synthetic catalog or model."
+    )
 
-        if not rows:
-            st.warning("No results -- every forecast in the sample errored.")
-            return
+    st.markdown("### By category")
+    by_cat = _aggregate_summary(results_df, ["category", "model"], metric_cols)
+    st.dataframe(by_cat, use_container_width=True, hide_index=True, column_config=col_config)
 
-        results_df = pd.DataFrame(rows)
-        metric_cols = [c for c in results_df.columns if c not in ("category", "model", "n_holdout")]
-        col_config = {
-            c: st.column_config.NumberColumn(c, help=metrics.METRIC_INFO[c], format="%.2f")
-            for c in metric_cols
-            if c in metrics.METRIC_INFO
-        }
+    st.markdown("### Overall (all sampled series)")
+    overall = _aggregate_summary(results_df, ["model"], metric_cols)
+    st.dataframe(overall, use_container_width=True, hide_index=True, column_config=col_config)
 
-        st.markdown("### By category")
-        by_cat = _aggregate_summary(results_df, ["category", "model"], metric_cols)
-        st.dataframe(by_cat, use_container_width=True, hide_index=True, column_config=col_config)
-
-        st.markdown("### Overall (all sampled series)")
-        overall = _aggregate_summary(results_df, ["model"], metric_cols)
-        st.dataframe(overall, use_container_width=True, hide_index=True, column_config=col_config)
-
-        chart_metric = st.selectbox("Metric to chart by category", metric_cols, key="sum_chart_metric")
-        st.markdown(f"### {chart_metric} by category")
-        ref_line = 1.0 if chart_metric in ("MASE", "RMSSE") else None
-        if ref_line is not None:
-            st.caption("Dashed line at 1.0 = seasonal-naive benchmark. Below it beats naive; above it loses to naive.")
-        st.plotly_chart(plotting.summary_bar_chart(by_cat, chart_metric, reference_line=ref_line), use_container_width=True)
-
-        st.caption(
-            f"Sampled {len(sample_ids)} of {len(catalog)} total series ({per_category} per category), "
-            f"holdout = {holdout_frac * 100:.0f}% of each series' own length."
-        )
+    chart_metric = st.selectbox("Metric to chart by category", metric_cols, key="sum_chart_metric")
+    st.markdown(f"### {chart_metric} by category")
+    ref_line = 1.0 if chart_metric in ("MASE", "RMSSE") else None
+    if ref_line is not None:
+        st.caption("Dashed line at 1.0 = seasonal-naive benchmark. Below it beats naive; above it loses to naive.")
+    st.plotly_chart(plotting.summary_bar_chart(by_cat, chart_metric, reference_line=ref_line), use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1135,7 +1098,7 @@ def tab_upload(model):
             )
             all_results = {"TimesFM": tfm_res, **base_res}
 
-        st.markdown("**Accuracy on holdout**")
+        st.markdown("**Accuracy & calculation time on holdout**")
         render_metrics_table(holdout_y, train_y, season_length, all_results)
         render_summary_stats(df["y"].to_numpy(), label=f"{value_col}, full uploaded series")
         render_calibration_section(holdout_y, tfm_res)
@@ -1146,7 +1109,7 @@ def tab_upload(model):
 # ---------------------------------------------------------------------------
 
 
-APP_VERSION = "v0.1.44"
+APP_VERSION = "v0.1.46"
 
 
 def main():
@@ -1169,7 +1132,7 @@ def main():
     with t3:
         tab_gallery(model)
     with t4:
-        tab_summary(model)
+        tab_summary()
     with t5:
         tab_upload(model)
     with t6:

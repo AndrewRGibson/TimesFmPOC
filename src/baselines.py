@@ -10,6 +10,8 @@ quantile-for-quantile.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
@@ -347,6 +349,7 @@ def run_baselines(
 
     for name in model_names:
         if name in REGRESSION_MODEL_CHOICES:
+            t0 = time.perf_counter()
             try:
                 if name == "ExponentialTrend":
                     results[name] = _fit_exponential_trend_baseline(df["y"].to_numpy(), horizon)
@@ -354,10 +357,12 @@ def run_baselines(
                     results[name] = _fit_regression_baseline(
                         df["y"].to_numpy(), horizon, season_length, with_seasonal=(name == "LinearRegression")
                     )
+                results[name]["calc_ms"] = (time.perf_counter() - t0) * 1000
             except Exception as exc:  # noqa: BLE001 - surfaced in UI, not swallowed silently
                 results[name] = {"point": None, "quantiles": None, "error": str(exc)}
             results[name]["season_length"] = _tag_season_length(name)
             continue
+        t0 = time.perf_counter()
         try:
             if name == "Theta" and season_length > 1:
                 # Bypasses Theta's own unreliable seasonality test -- see
@@ -373,6 +378,7 @@ def run_baselines(
                     quantiles[qlo] = fc[f"{name}-lo-{level}"].to_numpy()
                     quantiles[qhi] = fc[f"{name}-hi-{level}"].to_numpy()
                 results[name] = {"point": point, "quantiles": quantiles, "error": None}
+            results[name]["calc_ms"] = (time.perf_counter() - t0) * 1000
         except Exception as exc:  # noqa: BLE001 - surfaced in UI, not swallowed silently
             results[name] = {"point": None, "quantiles": None, "error": str(exc)}
         results[name]["season_length"] = _tag_season_length(name)

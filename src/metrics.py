@@ -233,4 +233,16 @@ METRIC_INFO: dict[str, str] = {
         "it's only meaningful for comparing models against each other on the same series, and it's an "
         "average so it can mask miscalibration at one specific percentile level."
     ),
+    "calculation ms": (
+        "Wall-clock time (milliseconds) to fit and forecast with this model on this series, measured "
+        "around the actual fit/forecast call only (excludes shared prep work like season-length "
+        "detection, done once and shared across models rather than repeated per model). Strength: "
+        "shows the real cost of each model side by side with its accuracy, not just an assumption "
+        "('AutoETS is slow') -- e.g. AutoETS's error/trend/season component search is dramatically "
+        "more expensive at long seasonal periods than SeasonalNaive/Theta/regression fits are. "
+        "Weakness: reflects this machine's current load, not a portable benchmark -- useful for "
+        "relative comparison between models here and now, not as an absolute number to quote elsewhere. "
+        "Cached results (unchanged series/holdout/model) show the ORIGINAL computation's time, not "
+        "instant cache retrieval, since that's the number worth knowing."
+    ),
 }

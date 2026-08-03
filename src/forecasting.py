@@ -9,6 +9,8 @@ examples.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import timesfm
 
@@ -59,10 +61,12 @@ def forecast_series(model, context: np.ndarray, horizon: int) -> dict:
     the padded context) concatenated *before* the horizon-length forecast --
     so the result must be trimmed to its last `horizon` entries.
     """
+    t0 = time.perf_counter()
     point, quantiles = model.forecast(horizon=horizon, inputs=[np.asarray(context, dtype=float)])
     point = np.asarray(point[0])[-horizon:]
     quantiles = np.asarray(quantiles[0])[-horizon:]
-    return {"point": point, "quantiles": _quantile_dict(quantiles)}
+    calc_ms = (time.perf_counter() - t0) * 1000
+    return {"point": point, "quantiles": _quantile_dict(quantiles), "calc_ms": calc_ms}
 
 
 def forecast_with_covariates(
@@ -88,6 +92,7 @@ def forecast_with_covariates(
     stat_num = {k: [v] for k, v in (static_numerical or {}).items()}
     stat_cat = {k: [v] for k, v in (static_categorical or {}).items()}
 
+    t0 = time.perf_counter()
     point_outputs, quantile_outputs = model.forecast_with_covariates(
         inputs=[np.asarray(context, dtype=float)],
         dynamic_numerical_covariates=dyn_num or None,
@@ -100,7 +105,8 @@ def forecast_with_covariates(
     )
     point = np.asarray(point_outputs[0])[:horizon]
     quantiles_raw = np.asarray(quantile_outputs[0])[:horizon]
-    return {"point": point, "quantiles": _quantile_dict(quantiles_raw)}
+    calc_ms = (time.perf_counter() - t0) * 1000
+    return {"point": point, "quantiles": _quantile_dict(quantiles_raw), "calc_ms": calc_ms}
 
 
 def estimate_price_elasticity(

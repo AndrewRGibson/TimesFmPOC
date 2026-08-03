@@ -325,3 +325,50 @@ this isn't a clean, isolated duration)
     instead of two working and two silently broken. Re-verified on a
     second weekly series and spot-checked monthly/annual/daily frequencies
     for regressions -- none found.
+
+## v0.1.45 -- 2026-08-03
+
+**Time:** ~6 min
+
+### Added
+- "calculation ms" column: wall-clock time to fit + forecast, per model,
+  measured around the actual fit/forecast call only (excludes one-time
+  shared prep like season-length detection). Shown on every per-series
+  metrics table (Simple Time-Series, Covariates, Gallery, Upload) and in
+  the Summary tab's sweep (simple per-series average there, like
+  MASE/RMSSE). Cached results show the original computation's time, not
+  near-zero cache-retrieval time, since that's the number worth knowing.
+  Verified directly: AutoETS's ~103ms on a weekly series is visibly
+  higher than SeasonalNaive's ~6ms or LinearRegression's ~5ms, putting a
+  real number on cost differences the app previously only asserted in
+  tooltips ("relatively slow to fit").
+
+### Changed
+- Renamed "Accuracy on holdout" to "Accuracy & calculation time on
+  holdout" (and the Covariates tab's equivalent) to reflect the new
+  column.
+
+## v0.1.46 -- 2026-08-03
+
+**Time:** ~12 min
+
+### Changed
+- Summary tab now loads precomputed results from `data/summary_precomputed.json`
+  instead of running a live sweep. Diagnosed first rather than guessing: per-series
+  compute is genuinely fast (TimesFM ~270-800ms even at a full 931-point daily
+  context, baselines a few ms to ~130ms for AutoETS -- measured directly with the
+  v0.1.45 `calc_ms` instrumentation), but the sweep loop re-ran in full on every
+  widget interaction anywhere in the app (Streamlit reruns the whole script on any
+  interaction, and the tab's `sum_ran` gate only skipped the *initial* run, not
+  every rerun after), and many fast per-series calls across dozens of series and
+  models still add up. Fixed by factoring the row-computation logic into
+  `src/summary_compute.py` (shared, so the live tab and the offline script can't
+  drift apart) and adding `scripts/precompute_summary.py`, which runs the full
+  sweep once -- all 40 catalog series x TimesFM + all 7 baselines, 316 rows in
+  232s -- and writes the result to a committed JSON file the tab just reads.
+  Individual-series tabs (Simple Time-Series, Covariates, Gallery, Upload) are
+  unaffected -- still computed live/on demand as before, per the user's explicit
+  direction to keep those interactive and only lock down the Summary rollup.
+  The Summary tab's sample-size/model-choice/holdout-fraction sliders and "Run"
+  button are gone along with the live sweep; re-run the script (documented in its
+  own docstring) after changing the synthetic catalog or model.
