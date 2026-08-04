@@ -786,13 +786,26 @@ def _aggregate_summary(df: pd.DataFrame, group_cols: list[str], metric_cols: lis
     combine proportions from groups of very different sample sizes: a 4-point
     annual series' coverage estimate is far noisier than a 150-point daily
     one's (see the '80% coverage SE %' column on the per-series tables), and
-    shouldn't move the aggregate just as much as the daily series does."""
+    shouldn't move the aggregate just as much as the daily series does.
+
+    Alongside the pooled coverage %, this also synthesizes an '80% coverage
+    SE %' column -- the standard error of that *pooled* proportion (binomial
+    SE sqrt(p(1-p)/N) using the combined holdout-point count N across every
+    series in the group, not an average of the individual series' SEs, which
+    would overstate precision by ignoring that the series are pooled). It's
+    not one of metric_cols/a real per-row column -- it only exists at the
+    aggregate level, since a single series already has its own SE column in
+    the per-series tables."""
     def agg(group: pd.DataFrame) -> pd.Series:
         out = {}
         for col in metric_cols:
             valid = group[col].notna()
             if col == "80% coverage %" and valid.any():
-                out[col] = np.average(group.loc[valid, col], weights=group.loc[valid, "n_holdout"])
+                n_total = group.loc[valid, "n_holdout"].sum()
+                p_pct = np.average(group.loc[valid, col], weights=group.loc[valid, "n_holdout"])
+                out[col] = p_pct
+                p = p_pct / 100
+                out["80% coverage SE %"] = float(np.sqrt(p * (1 - p) / n_total) * 100) if n_total > 0 else float("nan")
             else:
                 out[col] = group.loc[valid, col].mean()
         return pd.Series(out)
@@ -888,9 +901,13 @@ heterogeneous series that breaks.
 
     results_df = pd.DataFrame(rows)
     metric_cols = [c for c in results_df.columns if c not in ("category", "model", "n_holdout")]
+    # "80% coverage SE %" isn't a raw per-row column (it only exists once rows are
+    # pooled -- see _aggregate_summary), so it's added to the *displayed* columns
+    # here rather than to metric_cols, which drives aggregation over real columns.
+    display_cols = metric_cols + (["80% coverage SE %"] if "80% coverage %" in metric_cols else [])
     col_config = {
         c: st.column_config.NumberColumn(c, help=metrics.METRIC_INFO[c], format=_METRIC_FORMATS.get(c, "%.2f"))
-        for c in metric_cols
+        for c in display_cols
         if c in metrics.METRIC_INFO
     }
 
@@ -1109,7 +1126,7 @@ def tab_upload(model):
 # ---------------------------------------------------------------------------
 
 
-APP_VERSION = "v0.1.46"
+APP_VERSION = "v0.1.48"
 
 
 def main():

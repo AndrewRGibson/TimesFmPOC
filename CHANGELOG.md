@@ -372,3 +372,46 @@ this isn't a clean, isolated duration)
   The Summary tab's sample-size/model-choice/holdout-fraction sliders and "Run"
   button are gone along with the live sweep; re-run the script (documented in its
   own docstring) after changing the synthetic catalog or model.
+
+## v0.1.47 -- 2026-08-04
+
+**Time:** ~10 min
+
+### Added
+- "80% coverage SE %" column on the Summary tab's "By category" and "Overall"
+  aggregate tables, next to the pooled "80% coverage %" they already showed.
+  Computed as the *pooled* binomial standard error (`sqrt(p(1-p)/N)` over the
+  combined holdout-point count across every series in the group), not an
+  average of each series' individual SE -- the per-series SE column already
+  shown elsewhere in the app would overstate the aggregate's uncertainty if
+  simply averaged, since it ignores that the series are pooled. Verified
+  against a hand-computed example (two series, n=10 and n=200, weighted
+  coverage 75.24% -> SE 2.98%) before shipping.
+
+## v0.1.48 -- 2026-08-04
+
+**Time:** ~30 min
+
+### Fixed
+- Baseline model colors/line-styles, across every chart that draws them
+  (fan charts, the Covariates combined chart, the Summary tab's bar chart).
+  `BASELINE_COLORS` only had entries for 4 of the 7 selectable baselines --
+  LinearTrend, LinearRegression, and ExponentialTrend all silently fell back
+  to the same gray, making them indistinguishable from each other whenever
+  more than one was checked (reported directly from a screenshot showing all
+  three as identical dotted gray lines). Fixed by giving all 7 a fixed color,
+  chosen by running this repo's dataviz-skill palette validator (OKLab CVD +
+  normal-vision separation) over every permutation of the candidate hues
+  against the 7 fixed model slots. That search also caught a pre-existing
+  defect: the two *default-shown* baselines, SeasonalNaive and AutoETS, were
+  orange/green -- a pairing that fails the colorblind-separation check
+  (ΔE 3.2 protanopia, a classic red-green collision) despite being the first
+  thing every user sees; they're now orange/aqua, which passes cleanly. Also
+  added a new `BASELINE_DASHES` mapping (each baseline gets its own dash
+  style, not a shared "dot") as a secondary, non-color identity channel --
+  with 7 independently-toggleable series, no hue set can stay pairwise-safe
+  under simulated colorblindness once more than ~3 are shown at once (the
+  validator confirms this is a hard limit of the palette, not a fixable
+  ordering problem), so color and dash are placed to never both collide on
+  the same pair. Verified by rendering all 7 baselines together and visually
+  confirming each is distinguishable.

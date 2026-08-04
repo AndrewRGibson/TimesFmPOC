@@ -1,9 +1,11 @@
 """Plotly chart builders shared across the Streamlit app.
 
 Color usage follows a fixed categorical order (never reassigned per filter):
-Actual = near-black, TimesFM = blue, baselines = orange/aqua/yellow/magenta/green
-in a fixed order. Uncertainty is shown as nested single-hue (blue) bands, light
-outward from the median -- never a second color. No dual axes.
+Actual = near-black, TimesFM = blue, each of the 7 baselines gets its own fixed
+hue (see BASELINE_COLORS) plus its own line-dash style (BASELINE_DASHES), since
+color alone can't stay pairwise-distinct once all 7 are shown at once.
+Uncertainty is shown as nested single-hue (blue) bands, light outward from the
+median -- never a second color. No dual axes.
 """
 
 from __future__ import annotations
@@ -20,16 +22,48 @@ GRIDLINE = "#e1e0d9"
 COLOR_ACTUAL = "#67665f"  # midway between INK_PRIMARY and COLOR_CONTEXT -- visible but no longer overpowers everything else
 COLOR_CONTEXT = "#c3c2b7"
 COLOR_TIMESFM = "#2a78d6"
-# Ordered so the two lower-contrast hues in this palette (magenta, aqua -- both
-# measured below 3:1 contrast on a light surface) land on Theta/MSTL, the two
-# baselines that are opt-in rather than selected by default, while the
-# default-shown baselines (SeasonalNaive, AutoETS) get the higher-contrast hues
-# (orange, green).
+# Fixed model -> color for every baseline `baselines.MODEL_CHOICES` offers, never
+# reassigned based on which subset a user has checked (a filter that changes the
+# series count must not repaint the survivors). All 7 need their own hue, since
+# checkboxes let a user show any combination simultaneously -- previously only 4
+# of the 7 had an entry here, so the other 3 (LinearTrend/LinearRegression/
+# ExponentialTrend) all silently fell back to the same INK_SECONDARY gray and
+# were indistinguishable from one another.
+#
+# Order/assignment was picked by running every permutation of these 7 hues
+# against the 7 fixed model slots through this repo's dataviz-skill palette
+# validator (adjacent-pair CVD ΔE + normal-vision ΔE, OKLab), keeping the two
+# defaults (SeasonalNaive, AutoETS) on the pairing with the best margin since
+# that's the combination every user sees first -- naively keeping their old
+# orange/green pairing actually FAILS the adjacent-CVD gate (ΔE 3.2 protan,
+# a classic red-green collision) despite the app doing that from the start.
+# The full 7-model chain still lands one pair (Theta/MSTL) in the 6-8 "floor"
+# band under deuteranopia, which the skill's method only allows alongside a
+# secondary (non-color) encoding -- see BASELINE_DASHES below, which exists
+# expressly to cover that.
 BASELINE_COLORS = {
     "SeasonalNaive": "#eb6834",  # orange
-    "AutoETS": "#008300",  # green
-    "Theta": "#e87ba4",  # magenta (lower contrast -- opt-in model)
-    "MSTL": "#1baf7a",  # aqua (lower contrast -- opt-in model)
+    "AutoETS": "#1baf7a",  # aqua
+    "Theta": "#e87ba4",  # magenta
+    "MSTL": "#008300",  # green
+    "LinearTrend": "#eda100",  # yellow
+    "LinearRegression": "#4a3aa7",  # violet
+    "ExponentialTrend": "#a0522d",  # brown
+}
+# Secondary (non-color) identity channel for baseline lines -- required because
+# 7 simultaneously-selectable series can't all clear the CVD-safe separation
+# floor on hue alone (see BASELINE_COLORS). Cycles every 5 slots (Plotly's named
+# dash styles, "solid" reserved for TimesFM/Actual/History), placed so that any
+# two models sharing a dash style always sit far apart in BASELINE_COLORS too --
+# so a collision would require BOTH channels to fail on the same pair.
+BASELINE_DASHES = {
+    "SeasonalNaive": "dot",
+    "AutoETS": "dash",
+    "Theta": "longdash",
+    "MSTL": "dashdot",
+    "LinearTrend": "longdashdot",
+    "LinearRegression": "dot",
+    "ExponentialTrend": "dash",
 }
 BAND_FILLS = {
     (0.1, 0.9): "rgba(42,120,214,0.12)",
@@ -142,7 +176,10 @@ def _add_fan_traces(
             fig.add_trace(
                 go.Scatter(
                     x=forecast_dates, y=res["point"], name=name, mode="lines",
-                    line=dict(color=BASELINE_COLORS.get(name, INK_SECONDARY), width=1.25, dash="dot"),
+                    line=dict(
+                        color=BASELINE_COLORS.get(name, INK_SECONDARY), width=1.25,
+                        dash=BASELINE_DASHES.get(name, "dot"),
+                    ),
                 ),
                 row=row, col=col,
             )
