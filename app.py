@@ -1135,6 +1135,11 @@ def main():
         f"{APP_VERSION} -- Google TimesFM 2.5 (200M, zero-shot) vs Nixtla statsforecast baselines, "
         "on synthetic series with known ground truth."
     )
+    st.markdown(
+        "Companion write-up: "
+        "[Beyond the Hype: Testing Google's TimesFM Time-Series Edge]"
+        "(https://www.linkedin.com/pulse/beyond-hype-testing-googles-timesfm-time-series-edge-gibson-ph-d--te2xc/)"
+    )
     model = get_model()
     t1, t2, t3, t4, t5, t6 = st.tabs(
         [
