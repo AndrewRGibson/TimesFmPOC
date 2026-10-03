@@ -1135,8 +1135,8 @@ def main():
         f"{APP_VERSION} -- Google TimesFM 2.5 (200M, zero-shot) vs Nixtla statsforecast baselines, "
         "on synthetic series with known ground truth."
     )
-    st.markdown(
-        "Companion write-up: "
+    st.info(
+        "📄 **Companion write-up:** "
         "[Beyond the Hype: Testing Google's TimesFM Time-Series Edge]"
         "(https://www.linkedin.com/pulse/beyond-hype-testing-googles-timesfm-time-series-edge-gibson-ph-d--te2xc/)"
     )
